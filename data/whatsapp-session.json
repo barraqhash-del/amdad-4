@@ -1,0 +1,17 @@
+{
+  "isConnected": true,
+  "status": "CONNECTED",
+  "phone": "771116809",
+  "storeName": "متجر إمداد النموذجي",
+  "ownerName": "المدير العام",
+  "managerPhone": "967770000000",
+  "connectedAt": "2026-08-18T14:04:51.395Z",
+  "lastActiveAt": "2026-08-18T14:04:51.395Z",
+  "deviceId": "Chrome (Linux/Cloud Server)",
+  "batteryLevel": 98,
+  "autoReconnect": true,
+  "cloudApiConfig": {
+    "enabled": true,
+    "provider": "BUILTIN_ENGINE"
+  }
+}

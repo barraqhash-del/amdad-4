@@ -1,0 +1,6 @@
+{
+  "name": "منصة إمداد - B2B للربط بين التجار والمصانع",
+  "description": "نظام موحد لتجار الجملة والمصانع لطلب النواقص وتقسيم الطلبيات تلقائياً على المصانع مع تتبع التوصيل والمواقع.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
