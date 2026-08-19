@@ -1,0 +1,156 @@
+name: Apply employee voucher image auto-send patch
+
+on:
+  push:
+    branches:
+      - feature/employee-voucher-whatsapp-autoapply
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Apply voucher image and store logo changes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              s = p.read_text(encoding='utf-8')
+              if old not in s:
+                  raise SystemExit(f'Expected text not found in {path}: {old[:80]}')
+              p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          # MerchantAccount: optional logo for the unified voucher template.
+          replace('src/types.ts',
+                  '  storeName: string;\n  ownerName: string;',
+                  '  storeName: string;\n  storeLogo?: string; // شعار المتجر المستخدم في السند الموحد\n  ownerName: string;')
+
+          # Persist store logo through merchant profile updates.
+          replace('src/services/storeService.ts',
+                  '      storeName?: string;\n      ownerName?: string;',
+                  '      storeName?: string;\n      storeLogo?: string;\n      ownerName?: string;')
+          replace('src/services/storeService.ts',
+                  '      if (data.storeName !== undefined) acc.storeName = data.storeName.trim();\n      if (data.ownerName !== undefined)',
+                  '      if (data.storeName !== undefined) acc.storeName = data.storeName.trim();\n      if (data.storeLogo !== undefined) acc.storeLogo = data.storeLogo;\n      if (data.ownerName !== undefined)')
+
+          # Add store-logo state, persistence and reset behavior to settings.
+          replace('src/components/merchant/MerchantSettingsPage.tsx',
+                  '  const [storeName, setStoreName] = useState(initialAccount.storeName || "");\n  const [ownerName',
+                  '  const [storeName, setStoreName] = useState(initialAccount.storeName || "");\n  const [storeLogo, setStoreLogo] = useState(initialAccount.storeLogo || "");\n  const [ownerName')
+          replace('src/components/merchant/MerchantSettingsPage.tsx',
+                  '    setStoreName(initialAccount.storeName || "");\n    setOwnerName',
+                  '    setStoreName(initialAccount.storeName || "");\n    setStoreLogo(initialAccount.storeLogo || "");\n    setOwnerName')
+          replace('src/components/merchant/MerchantSettingsPage.tsx',
+                  '      storeName,\n      ownerName,',
+                  '      storeName,\n      storeLogo,\n      ownerName,')
+          replace('src/components/merchant/MerchantSettingsPage.tsx',
+                  '    setStoreName(currentAccount.storeName || "");\n    setOwnerName',
+                  '    setStoreName(currentAccount.storeName || "");\n    setStoreLogo(currentAccount.storeLogo || "");\n    setOwnerName')
+          anchor = '''            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">'''
+          logo_block = '''            <div className="sm:col-span-2 lg:col-span-3 p-4 rounded-2xl border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/60 dark:bg-indigo-950/20 flex flex-col sm:flex-row items-center gap-4">
+              <div className="w-20 h-20 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 overflow-hidden flex items-center justify-center shrink-0">
+                {storeLogo ? <img src={storeLogo} alt="شعار المتجر" className="w-full h-full object-contain" /> : <Store className="w-8 h-8 text-indigo-500" />}
+              </div>
+              <div className="flex-1 w-full">
+                <label className="block font-black text-slate-700 dark:text-slate-300 text-xs mb-1.5">شعار المتجر — يظهر تلقائيًا في سند السلفة والخصم</label>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    if (file.size > 1024 * 1024) { setSavedSuccessMsg("حجم الشعار يجب ألا يتجاوز 1MB"); return; }
+                    const reader = new FileReader();
+                    reader.onload = () => setStoreLogo(String(reader.result || ""));
+                    reader.readAsDataURL(file);
+                  }}
+                  className="w-full text-xs font-bold text-slate-600 dark:text-slate-300"
+                />
+                <p className="text-[10px] text-slate-500 mt-1">PNG أو JPG أو WebP — يحفظ داخل حساب المتجر ويستخدم في السند الموحد.</p>
+              </div>
+              {storeLogo && <button type="button" onClick={() => setStoreLogo("")} className="px-3 py-2 rounded-xl bg-rose-50 text-rose-600 text-xs font-black">حذف الشعار</button>}
+            </div>
+
+'''
+          replace('src/components/merchant/MerchantSettingsPage.tsx', anchor, logo_block + anchor)
+
+          # Automatically render the voucher as an image in the background before dispatch.
+          wa = Path('src/services/whatsappService.ts')
+          s = wa.read_text(encoding='utf-8')
+          marker = '''export function dispatchVoucherDirectBackground(\n'''
+          helper = r'''async function renderVoucherImageDataUrl(voucher: EmployeeVoucher): Promise<string | undefined> {
+  if (typeof document === "undefined") return undefined;
+  try {
+    const store = storeService.getCurrentMerchantSession() as (MerchantAccount & { storeLogo?: string }) | null;
+    const host = document.createElement("div");
+    host.style.position = "fixed";
+    host.style.left = "-100000px";
+    host.style.top = "0";
+    host.style.width = "520px";
+    host.style.padding = "24px";
+    host.style.background = "#ffffff";
+    host.style.direction = "rtl";
+    host.style.fontFamily = "Arial, sans-serif";
+    const logo = store?.storeLogo
+      ? `<img src="${String(store.storeLogo).replace(/"/g, '&quot;')}" style="width:72px;height:72px;object-fit:contain;border-radius:16px;margin-bottom:12px" />`
+      : `<div style="width:72px;height:72px;border-radius:16px;background:#eef2ff;display:flex;align-items:center;justify-content:center;font-size:34px;margin-bottom:12px">🏪</div>`;
+    const isDeduction = voucher.type.includes("DEDUCTION");
+    const accent = isDeduction ? "#e11d48" : "#059669";
+    host.innerHTML = `<div style="box-sizing:border-box;border:1px solid #e2e8f0;border-radius:24px;padding:28px;text-align:center;color:#0f172a;background:#fff">
+      ${logo}
+      <div style="font-size:24px;font-weight:900">${voucher.storeName}</div>
+      <div style="font-size:18px;font-weight:800;margin-top:8px">${voucher.typeLabelAr}</div>
+      <div style="font-size:12px;color:#64748b;margin-top:6px">سند رقم: ${voucher.voucherNumber} — ${voucher.date} ${voucher.time}</div>
+      <div style="margin-top:24px;font-size:18px;font-weight:800">الموظف</div>
+      <div style="font-size:26px;font-weight:900;margin-top:6px">${voucher.employeeName}</div>
+      <div style="margin:24px auto;padding:18px;border:2px dashed ${accent};border-radius:18px;background:#f8fafc">
+        <div style="font-size:12px;color:#64748b;font-weight:800">المبلغ</div>
+        <div style="font-size:34px;font-weight:900;color:${accent};margin-top:6px">${voucher.amount.toLocaleString("ar-YE")} ر.ي</div>
+      </div>
+      <div style="font-size:14px;text-align:right;background:#f8fafc;border-radius:14px;padding:14px"><b>البيان:</b> ${voucher.reason}</div>
+      <div style="margin-top:18px;font-size:12px;color:#475569">المعتمد: ${voucher.approvedBy}</div>
+    </div>`;
+    document.body.appendChild(host);
+    const canvas = await html2canvas(host, { scale: 2, useCORS: true, backgroundColor: "#ffffff", logging: false });
+    host.remove();
+    return canvas.toDataURL("image/png");
+  } catch (error) {
+    console.warn("Automatic voucher image rendering failed", error);
+    return undefined;
+  }
+}
+
+'''
+          if marker not in s:
+              raise SystemExit('dispatch marker not found')
+          s = s.replace(marker, helper + marker, 1)
+          s = s.replace('export function dispatchVoucherDirectBackground(\n', 'export async function dispatchVoucherDirectBackground(\n', 1)
+          s = s.replace('  const messageText = generateVoucherWhatsAppText(voucher, store);\n', '  const messageText = generateVoucherWhatsAppText(voucher, store);\n  const generatedImageUrl = options?.imageUrl || await renderVoucherImageDataUrl(voucher);\n', 1)
+          s = s.replace('    imageUrl: options?.imageUrl, // Append image ', '    imageUrl: generatedImageUrl, // السند المصور يُولد تلقائيًا بدون معاينة ', 1)
+          wa.write_text(s, encoding='utf-8')
+
+          # Backend: accept browser-generated data URLs by converting them to a Buffer before Baileys sends the image.
+          be = Path('server/whatsappBackend.ts')
+          s = be.read_text(encoding='utf-8')
+          old = '''    if (imageUrl) {\n      await sock.sendMessage(jid, { \n        image: { url: imageUrl }, \n        caption: caption || message \n      });\n    } else {'''
+          new = '''    if (imageUrl) {\n      const dataMatch = typeof imageUrl === "string" ? imageUrl.match(/^data:image\\/[^;]+;base64,(.+)$/) : null;\n      const imagePayload = dataMatch ? Buffer.from(dataMatch[1], "base64") : { url: imageUrl };\n      await sock.sendMessage(jid, { \n        image: imagePayload as any, \n        caption: caption || message \n      });\n    } else {'''
+          if old not in s:
+              raise SystemExit('backend image block not found')
+          be.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/types.ts src/services/storeService.ts src/components/merchant/MerchantSettingsPage.tsx src/services/whatsappService.ts server/whatsappBackend.ts
+          git diff --cached --quiet || git commit -m "feat: auto-send employee voucher image with store branding"
+          git push
