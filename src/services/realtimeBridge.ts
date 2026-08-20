@@ -4,7 +4,7 @@ import { realtimeService, RealtimeEvent } from "./realtimeService";
 const ORDERS_KEY = "emdad_orders_v1";
 let remoteEventInProgress = false;
 let installed = false;
-let lastPublishedOrders = "";
+let lastPublishedOrderSignature = "";
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 
 function readLocalOrders(): any[] {
@@ -19,16 +19,19 @@ function readLocalOrders(): any[] {
 async function pushLocalOrders() {
   if (remoteEventInProgress) return;
   const orders = readLocalOrders();
-  const signature = JSON.stringify(orders);
-  if (!orders.length || signature === lastPublishedOrders) return;
+  const newestOrder = orders[0];
+  if (!newestOrder?.id) return;
+
+  const signature = JSON.stringify(newestOrder);
+  if (signature === lastPublishedOrderSignature) return;
 
   try {
     const response = await fetch("/api/orders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ order: orders[0] }),
+      body: JSON.stringify({ order: newestOrder }),
     });
-    if (response.ok) lastPublishedOrders = signature;
+    if (response.ok) lastPublishedOrderSignature = signature;
   } catch {
     // Keep the local operation valid; the next poll retries the upload.
   }
@@ -59,7 +62,7 @@ async function pullCentralOrders() {
       (storeService as any).notifyExternal?.();
       remoteEventInProgress = false;
     }
-    lastPublishedOrders = JSON.stringify(merged);
+    if (merged[0]) lastPublishedOrderSignature = JSON.stringify(merged[0]);
   } catch {
     // The UI continues from local state when the central service is offline.
   }
@@ -90,9 +93,8 @@ export function installRealtimeBridge() {
   void pullCentralOrders();
   void pushLocalOrders();
 
-  // Until every write path is moved from localStorage to the central API,
-  // this small bridge watches only the shared order collection and retries
-  // synchronization. It does not reload the page.
+  // Temporary migration bridge: only the shared order collection is synced
+  // here. Other domains will move to their own central APIs in later phases.
   syncTimer = setInterval(() => {
     void pushLocalOrders();
   }, 1000);
