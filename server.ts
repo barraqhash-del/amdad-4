@@ -15,6 +15,7 @@ import {
   clearWhatsAppServerLogs,
   updateWhatsAppCloudConfig,
 } from "./server/whatsappBackend";
+import { registerRealtimeOrderRoutes } from "./server/realtimeOrderStore";
 
 dotenv.config();
 
@@ -26,9 +27,8 @@ app.use(express.json({ limit: "10mb" }));
 // ==========================================
 // REALTIME EVENT HUB (SSE)
 // ==========================================
-// This is the transport layer for live UI updates. It intentionally does not
-// replace the application's data store yet; it only tells connected clients
-// that shared application state has changed.
+// Transport for live UI updates. Shared operational orders are persisted by
+// realtimeOrderStore so different devices can receive the same state.
 const realtimeClients = new Set<express.Response>();
 
 function publishRealtimeEvent(type = "state.changed", source = "client") {
@@ -73,6 +73,8 @@ app.post("/api/realtime/publish", (req, res) => {
   res.status(202).json({ success: true });
 });
 
+registerRealtimeOrderRoutes(app, publishRealtimeEvent);
+
 // Initialize Gemini API client lazily / safely
 let aiClient: GoogleGenAI | null = null;
 function getGeminiClient() {
@@ -93,7 +95,6 @@ function getGeminiClient() {
   return aiClient;
 }
 
-// API Health Check
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", system: "إمداد - Emdad B2B Platform" });
 });
@@ -155,7 +156,6 @@ app.post("/api/whatsapp/send-voucher", async (req, res) => {
     if (!voucher) {
       return res.status(400).json({ error: "بيانات السند مطلوبة لإتمام الإرسال" });
     }
-
     const result = await sendVoucherDirectBackground({
       voucher,
       employeePhone,
@@ -164,7 +164,6 @@ app.post("/api/whatsapp/send-voucher", async (req, res) => {
       managerText,
       imageUrl,
     });
-
     res.json(result);
   } catch (err: any) {
     console.error("[API Error] WhatsApp Send Voucher:", err);
@@ -178,16 +177,7 @@ app.post("/api/whatsapp/send-receipt", async (req, res) => {
     if (!phone) {
       return res.status(400).json({ error: "رقم هاتف الموظف مطلوب للإرسال" });
     }
-
-    const result = await sendWhatsAppReceipt({
-      phone,
-      message,
-      imageUrl,
-      caption,
-      voucherData,
-      provider,
-    });
-
+    const result = await sendWhatsAppReceipt({ phone, message, imageUrl, caption, voucherData, provider });
     res.json(result);
   } catch (err: any) {
     console.error("[API Error] WhatsApp Send Receipt:", err);
@@ -226,7 +216,6 @@ app.post("/api/whatsapp/cloud-config", (req, res) => {
 app.post("/api/ai/parse-shortages", async (req, res) => {
   try {
     const { noteText, availableProducts } = req.body;
-
     if (!noteText || typeof noteText !== "string") {
       return res.status(400).json({ error: "الرجاء إدخال نص قائمة النواقص" });
     }
