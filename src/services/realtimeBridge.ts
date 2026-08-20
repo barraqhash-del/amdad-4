@@ -13,11 +13,17 @@ export function installRealtimeBridge() {
     service.notifyExternal = () => service.notify();
   }
 
+  const originalSubscribe = service.subscribe.bind(service);
+  service.subscribe = (listener: () => void) => {
+    return originalSubscribe(() => {
+      listener();
+      if (!remoteEventInProgress) publishLocalRealtimeChange();
+    });
+  };
+
   realtimeService.subscribe(() => {
     remoteEventInProgress = true;
     try {
-      // Re-read current local state through the existing StoreService
-      // subscribers. No browser refresh is performed.
       service.notifyExternal();
     } finally {
       remoteEventInProgress = false;
