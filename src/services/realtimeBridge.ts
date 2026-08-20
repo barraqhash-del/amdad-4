@@ -8,31 +8,24 @@ export function installRealtimeBridge() {
   if (installed || typeof window === "undefined") return;
   installed = true;
 
-  const originalSubscribe = storeService.subscribe.bind(storeService);
-
-  // Keep the existing StoreService API intact, but make every existing
-  // subscriber react to server-side state-change events as well.
-  (storeService as any).subscribe = (listener: () => void) => {
-    const unsubscribe = originalSubscribe(listener);
-    return unsubscribe;
-  };
+  const service = storeService as any;
+  if (typeof service.notifyExternal !== "function") {
+    service.notifyExternal = () => service.notify();
+  }
 
   realtimeService.subscribe(() => {
     remoteEventInProgress = true;
     try {
-      // The current application still reads operational data from localStorage.
-      // Triggering the existing subscribers lets the UI re-read that state
-      // without forcing a page reload. Central persistence is the next phase.
-      storeService.notifyExternal();
+      // Re-read current local state through the existing StoreService
+      // subscribers. No browser refresh is performed.
+      service.notifyExternal();
     } finally {
       remoteEventInProgress = false;
     }
   });
 
-  // Same-browser tabs receive the native storage event. This bridge turns it
-  // into the same StoreService notification path without requiring Refresh.
   window.addEventListener("storage", () => {
-    if (!remoteEventInProgress) storeService.notifyExternal();
+    if (!remoteEventInProgress) service.notifyExternal();
   });
 
   realtimeService.start();
@@ -45,6 +38,6 @@ export function publishLocalRealtimeChange(type = "state.changed") {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ type }),
   }).catch(() => {
-    // The app continues working locally if the realtime server is unavailable.
+    // Local operation remains valid if the realtime server is unavailable.
   });
 }
