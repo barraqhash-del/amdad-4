@@ -23,6 +23,56 @@ const PORT = 3000;
 
 app.use(express.json({ limit: "10mb" }));
 
+// ==========================================
+// REALTIME EVENT HUB (SSE)
+// ==========================================
+// This is the transport layer for live UI updates. It intentionally does not
+// replace the application's data store yet; it only tells connected clients
+// that shared application state has changed.
+const realtimeClients = new Set<express.Response>();
+
+function publishRealtimeEvent(type = "state.changed", source = "client") {
+  const payload = JSON.stringify({ type, source, timestamp: Date.now() });
+  realtimeClients.forEach((client) => {
+    try {
+      client.write(`data: ${payload}\\n\\n`);
+    } catch {
+      realtimeClients.delete(client);
+    }
+  });
+}
+
+app.get("/api/realtime/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  realtimeClients.add(res);
+  res.write(`data: ${JSON.stringify({ type: "connected", source: "server", timestamp: Date.now() })}\\n\\n`);
+
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(`: heartbeat ${Date.now()}\\n\\n`);
+    } catch {
+      clearInterval(heartbeat);
+      realtimeClients.delete(res);
+    }
+  }, 20000);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    realtimeClients.delete(res);
+  });
+});
+
+app.post("/api/realtime/publish", (req, res) => {
+  const type = typeof req.body?.type === "string" ? req.body.type : "state.changed";
+  publishRealtimeEvent(type, "client");
+  res.status(202).json({ success: true });
+});
+
 // Initialize Gemini API client lazily / safely
 let aiClient: GoogleGenAI | null = null;
 function getGeminiClient() {
@@ -52,7 +102,6 @@ app.get("/api/health", (_req, res) => {
 // WHATSAPP BACKGROUND ENGINE SERVER APIS
 // ==========================================
 
-// 1. Get Live Status & Connection Indicators
 app.get("/api/whatsapp/status", (_req, res) => {
   try {
     const status = getWhatsAppServerStatus();
@@ -62,7 +111,6 @@ app.get("/api/whatsapp/status", (_req, res) => {
   }
 });
 
-// 2. Generate Live Multi-Device QR Code Payload
 app.get("/api/whatsapp/qr", (req, res) => {
   try {
     const phone = (req.query.phone as string) || "771234567";
@@ -73,7 +121,6 @@ app.get("/api/whatsapp/qr", (req, res) => {
   }
 });
 
-// 3. Generate 8-character Pairing Code
 app.post("/api/whatsapp/pair-code", (req, res) => {
   try {
     const code = generatePairingCode();
@@ -83,7 +130,6 @@ app.post("/api/whatsapp/pair-code", (req, res) => {
   }
 });
 
-// 4. Connect / Confirm Pair Session
 app.post("/api/whatsapp/connect", (req, res) => {
   try {
     const { phone, storeName, ownerName } = req.body;
@@ -94,7 +140,6 @@ app.post("/api/whatsapp/connect", (req, res) => {
   }
 });
 
-// 5. Disconnect / Unlink Session (Drops files on server)
 app.post("/api/whatsapp/disconnect", (_req, res) => {
   try {
     const session = disconnectWhatsAppSession();
@@ -104,7 +149,6 @@ app.post("/api/whatsapp/disconnect", (_req, res) => {
   }
 });
 
-// 6. Direct Background Voucher Dispatch (Triggered on Voucher Approval - ZERO Popups)
 app.post("/api/whatsapp/send-voucher", async (req, res) => {
   try {
     const { voucher, employeePhone, managerPhone, customText, imageUrl, managerText } = req.body;
@@ -128,7 +172,6 @@ app.post("/api/whatsapp/send-voucher", async (req, res) => {
   }
 });
 
-// 7. Universal Direct Receipt / Image / Report Dispatch API
 app.post("/api/whatsapp/send-receipt", async (req, res) => {
   try {
     const { phone, message, imageUrl, caption, voucherData, provider } = req.body;
@@ -152,17 +195,15 @@ app.post("/api/whatsapp/send-receipt", async (req, res) => {
   }
 });
 
-// 8. Get Dispatch Logs
 app.get("/api/whatsapp/logs", (_req, res) => {
   try {
     const logs = getWhatsAppServerLogs();
     res.json({ logs, count: logs.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to get WhatsApp logs" });
+    res.status(500).json({ error: err.message || "Failed to get logs" });
   }
 });
 
-// 8. Clear Dispatch Logs
 app.post("/api/whatsapp/clear-logs", (_req, res) => {
   try {
     clearWhatsAppServerLogs();
@@ -172,7 +213,6 @@ app.post("/api/whatsapp/clear-logs", (_req, res) => {
   }
 });
 
-// 9. Update Cloud API / Baileys Gateway Config
 app.post("/api/whatsapp/cloud-config", (req, res) => {
   try {
     const session = updateWhatsAppCloudConfig(req.body);
@@ -192,7 +232,6 @@ app.post("/api/ai/parse-shortages", async (req, res) => {
     }
 
     const ai = getGeminiClient();
-
     const prompt = `أنت مساعد ذكي ونظام لإعادة التعبئة في منصة B2B إمداد.
 لديك قائمة بالمنتجات المتاحة في المصانع المسجلة لدينا:
 ${JSON.stringify(availableProducts, null, 2)}
